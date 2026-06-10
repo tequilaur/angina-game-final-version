@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Angina Adventure - Final Upgrade</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;600&display=swap" rel="stylesheet">
+
+<style>
+body{
+margin:0;
+overflow:hidden;
+background:#111;
+font-family:'Quicksand', sans-serif;
+}
+canvas{
+display:block;
+margin:auto;
+background:#7a0f0f;
+touch-action:none;
+}
+#touchControls{
+position:absolute;
+bottom:20px;
+left:20px;
+display:none;
+gap:10px;
+z-index:100;
+}
+.touchBtn{
+width:60px;
+height:60px;
+border-radius:50%;
+background:rgba(255,255,255,0.3);
+border:2px solid rgba(255,255,255,0.6);
+color:#fff;
+font-size:24px;
+cursor:pointer;
+display:flex;
+align-items:center;
+justify-content:center;
+font-weight:bold;
+user-select:none;
+-webkit-user-select:none;
+}
+.touchBtn:active{
+background:rgba(255,255,255,0.6);
+}
+#dpadContainer{
+display:grid;
+grid-template-columns:repeat(3,60px);
+grid-template-rows:repeat(3,60px);
+gap:5px;
+}
+#jumpBtn{
+position:absolute;
+bottom:20px;
+right:20px;
+width:80px;
+height:80px;
+}
+#shootBtn{
+position:absolute;
+bottom:110px;
+right:20px;
+width:80px;
+height:80px;
+}
+@media (max-width: 768px) {
+#touchControls{
+display:flex;
+flex-direction:column;
+}
+canvas{
+max-width:100vw;
+max-height:100vh;
+}
+}
+</style>
+</head>
+
+<body>
+
+<canvas id="game" width="1200" height="650"></canvas>
+
+<div id="touchControls">
+<div id="dpadContainer">
+<div class="touchBtn" id="upBtn" style="grid-column:2;grid-row:1;">⬆️</div>
+<div class="touchBtn" id="leftBtn" style="grid-column:1;grid-row:2;">⬅️</div>
+<div class="touchBtn" id="rightBtn" style="grid-column:3;grid-row:2;">➡️</div>
+<div class="touchBtn" id="downBtn" style="grid-column:2;grid-row:3;">⬇️</div>
+</div>
+<div class="touchBtn" id="jumpBtn">JUMP</div>
+<div class="touchBtn" id="shootBtn">SHOOT</div>
+</div>
+
+<script>
+
+/* ================= AUDIO (HEARTBEAT) ================= */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function heartbeat(volume){
+const osc = audioCtx.createOscillator();
+const gain = audioCtx.createGain();
+
+osc.type="sine";
+osc.frequency.value=60;
+
+gain.gain.value=volume;
+
+osc.connect(gain);
+gain.connect(audioCtx.destination);
+
+osc.start();
+osc.stop(audioCtx.currentTime + 0.08);
+}
+
+/* ================= CANVAS ================= */
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+/* STATE */
+let state="menu";
+let difficulty="normal";
+let isPaused=false;
+
+/* INPUT */
+const keys={};
+document.addEventListener("keydown",e=>{
+keys[e.key]=true;
+if(e.key==="p" || e.key==="P") togglePause();
+});
+document.addEventListener("keyup",e=>keys[e.key]=false);
+
+/* TOUCH CONTROLS */
+const touchControls={left:false,right:false,jump:false,shoot:false};
+function setupTouchControls(){
+const touchBtns={
+left:document.getElementById("leftBtn"),
+right:document.getElementById("rightBtn"),
+jump:document.getElementById("jumpBtn"),
+shoot:document.getElementById("shootBtn")
+};
+
+Object.entries(touchBtns).forEach(([key,btn])=>{
+btn.addEventListener("touchstart",e=>{e.preventDefault();touchControls[key]=true;});
+btn.addEventListener("touchend",e=>{e.preventDefault();touchControls[key]=false;});
+btn.addEventListener("mousedown",()=>touchControls[key]=true);
+btn.addEventListener("mouseup",()=>touchControls[key]=false);
+});
+}
+setupTouchControls();
+
+/* WORLD */
+const WORLD_WIDTH=4500;
+let cameraX=0;
+
+/* PLAYER */
+const player={x:100,y:500,w:40,h:40,vx:0,vy:0,jumps:2};
+const gravity=0.7;
+
+/* GAME */
+let oxygen=60;
+let lives=3;
+let score=0;
+let startTime=0;
+let elapsedTime=0;
+
+/* HEART */
+const heart={x:4200,y:380,w:90,h:90};
+let heartPulse=0;
+
+/* PLAQUES */
+const plaques=[];
+const finalWave=[];
+
+/* PLATFORMS */
+const platforms=[
+{x:0,y:550,w:4500,h:100},
+{x:250,y:470,w:180,h:20},
+{x:500,y:400,w:180,h:20},
+{x:800,y:340,w:180,h:20},
+{x:1100,y:280,w:180,h:20},
+{x:1400,y:340,w:180,h:20},
+{x:1700,y:400,w:180,h:20},
+{x:2000,y:300,w:180,h:20},
+{x:2300,y:240,w:180,h:20},
+{x:2600,y:300,w:180,h:20},
+{x:2900,y:360,w:180,h:20},
+{x:3200,y:300,w:180,h:20},
+{x:3500,y:260,w:180,h:20}
+];
+
+/* OXYGEN COINS */
+const oxygenCoins=[];
+
+/* BULLETS */
+const bullets=[];
+
+/* COLLISION */
+function hit(a,b){
+return a.x<b.x+b.w &&
+a.x+a.w>b.x &&
+a.y<b.y+b.h &&
+a.y+a.h>b.y;
+}
+
+/* DRAW PLAYER */
+function drawCell(x,y){
+ctx.fillStyle="#d60000";
+ctx.beginPath();
+ctx.ellipse(x,y,22,15,0,0,Math.PI*2);
+ctx.fill();
+ctx.fillStyle="#ff9aa9";
+ctx.beginPath();
+ctx.ellipse(x,y,10,6,0,0,Math.PI*2);
+ctx.fill();
+}
+
+/* SHOOT */
+function shoot(){
+bullets.push({x:player.x+20,y:player.y+20,vx:10,w:10,h:4});
+}
+
+/* PAUSE TOGGLE */
+function togglePause(){
+if(state==="play"){
+isPaused=!isPaused;
+}
+}
+
+/* RESET */
+function reset(){
+player.x=100;player.y=500;
+player.vx=0;player.vy=0;
+player.jumps=2;
+
+oxygen=60;
+lives=3;
+score=0;
+startTime=Date.now();
+elapsedTime=0;
+isPaused=false;
+
+bullets.length=0;
+plaques.length=0;
+finalWave.length=0;
+oxygenCoins.length=0;
+
+/* Initialize plaques based on difficulty */
+const plaqueDensity=difficulty==="easy"?4:difficulty==="hard"?8:6;
+for(let i=0;i<plaqueDensity;i++){
+plaques.push({
+x:600+i*500,
+y:520,
+w:60,h:60,
+speed:difficulty==="easy"?1:difficulty==="hard"?2.5:1.5+Math.random(),
+type:"normal"
+});
+}
+
+/* Initialize oxygen coins */
+for(let i=0;i<25;i++){
+oxygenCoins.push({x:300+i*170,y:200+Math.random()*250,taken:false});
+}
+
+state="play";
+}
+
+/* LIFE */
+function loseLife(){
+lives--;
+player.x=100;
+player.y=500;
+player.jumps=2;
+if(lives<=0) state="lose";
+}
+
+/* SPAWN EXTRA PLAQUE */
+function spawnExtraPlaque(){
+const types=["normal","fast","tank"];
+const type=types[Math.floor(Math.random()*types.length)];
+let speed=1.5;
+let w=60,h=60;
+
+if(type==="fast") speed=3;
+if(type==="tank"){speed=0.8;w=80;h=80;}
+
+finalWave.push({
+x:3800+Math.random()*400,
+y:480,
+w,h,speed,type
+});
+}
+
+/* ================= UPDATE ================= */
+function update(){
+
+if(state!=="play" || isPaused) return;
+
+elapsedTime=Math.floor((Date.now()-startTime)/1000);
+
+/* OXYGEN LOSS */
+const oxygenRate=difficulty==="easy"?0.03:difficulty==="hard"?0.1:0.06;
+oxygen-=oxygenRate;
+if(oxygen<=0) loseLife();
+
+/* movement */
+if(keys["ArrowRight"] || touchControls.right) player.vx=5;
+else if(keys["ArrowLeft"] || touchControls.left) player.vx=-5;
+else player.vx=0;
+
+/* jump */
+if((keys[" "] || keys["ArrowUp"] || touchControls.jump) && player.jumps>0){
+player.vy=-14;
+player.jumps--;
+}
+
+/* shoot */
+if((keys["f"] || touchControls.shoot)){
+if(!player.fired){shoot();player.fired=true;score+=5;}
+}else player.fired=false;
+
+/* physics */
+player.vy+=gravity;
+player.x+=player.vx;
+player.y+=player.vy;
+
+/* ground */
+if(player.y>520){
+player.y=520;
+player.vy=0;
+player.jumps=2;
+}
+
+/* world bounds */
+if(player.x<0) player.x=0;
+if(player.x>WORLD_WIDTH) player.x=WORLD_WIDTH;
+
+/* camera */
+cameraX=player.x-400;
+if(cameraX<0) cameraX=0;
+if(cameraX>WORLD_WIDTH-1200) cameraX=WORLD_WIDTH-1200;
+
+/* platforms */
+platforms.forEach(p=>{
+if(hit(player,p)&&player.vy>=0){
+player.y=p.y-player.h;
+player.vy=0;
+player.jumps=2;
+}
+});
+
+/* oxygen coins */
+oxygenCoins.forEach(c=>{
+if(!c.taken && hit(player,{x:c.x,y:c.y,w:20,h:20})){
+c.taken=true;
+oxygen=Math.min(100,oxygen+10);
+score+=10;
+}
+});
+
+/* plaques */
+plaques.forEach(p=>{
+if(player.x<p.x) p.x-=p.speed;
+else p.x+=p.speed;
+
+if(hit(player,p)) loseLife();
+
+for(let i=bullets.length-1;i>=0;i--){
+if(hit(bullets[i],p)){
+plaques.splice(plaques.indexOf(p),1);
+bullets.splice(i,1);
+score+=50;
+break;
+}
+}
+});
+
+/* FINAL WAVE */
+if(player.x>3500 && finalWave.length<(difficulty==="hard"?8:5)){
+if(Math.random()<0.02) spawnExtraPlaque();
+}
+
+finalWave.forEach(p=>{
+if(player.x<p.x) p.x-=p.speed;
+else p.x+=p.speed;
+
+if(hit(player,p)) loseLife();
+
+for(let i=bullets.length-1;i>=0;i--){
+if(hit(bullets[i],p)){
+finalWave.splice(finalWave.indexOf(p),1);
+bullets.splice(i,1);
+score+=(p.type==="tank"?100:p.type==="fast"?75:50);
+break;
+}
+}
+});
+
+/* bullets */
+for(let i=bullets.length-1;i>=0;i--){
+bullets[i].x+=bullets[i].vx;
+if(bullets[i].x>WORLD_WIDTH) bullets.splice(i,1);
+}
+
+/* HEART BEAT SOUND */
+heartPulse+=0.12;
+if(Math.sin(heartPulse)>0.98){
+heartbeat(0.08 + (1-oxygen/100)*0.2);
+}
+
+/* WIN */
+if(hit(player,heart)){
+state="win";
+}
+}
+
+/* ================= HEART DRAW ================= */
+function drawHeart(x,y,size){
+let pulse=Math.sin(heartPulse)*8;
+
+ctx.fillStyle="#ff3366";
+
+ctx.beginPath();
+ctx.moveTo(x,y+size/4);
+ctx.bezierCurveTo(x,y,x-size/2,y,x-size/2,y+size/3);
+ctx.bezierCurveTo(x-size/2,y+size/1.5,x,y+size,x,y+size*1.2);
+ctx.bezierCurveTo(x,y+size,x+size/2,y+size/1.5,x+size/2,y+size/3);
+ctx.bezierCurveTo(x+size/2,y,x,y,x,y+size/4);
+ctx.fill();
+
+ctx.beginPath();
+ctx.globalAlpha=0.4;
+ctx.arc(x,y,40+pulse,0,Math.PI*2);
+ctx.fill();
+ctx.globalAlpha=1;
+}
+
+/* ================= MENU ================= */
+function drawMenu(){
+ctx.clearRect(0,0,1200,650);
+ctx.fillStyle="#8b0000";
+ctx.fillRect(0,0,1200,650);
+
+ctx.fillStyle="#fff";
+ctx.textAlign="center";
+
+ctx.font="50px Quicksand";
+ctx.fillText("❤️ Angina Adventure",600,120);
+
+ctx.font="18px Quicksand";
+ctx.fillText("Collect oxygen. Survive plaques. Reach the heart.",600,240);
+ctx.fillText("Final area gets harder with a plaque rush.",600,270);
+
+ctx.fillText("Arrow Keys Move | SPACE Jump | F Shoot | P Pause",600,340);
+
+ctx.font="16px Quicksand";
+ctx.fillText("SELECT DIFFICULTY:",600,420);
+
+ctx.fillStyle=difficulty==="easy"?"#00ff99":"#fff";
+ctx.fillRect(350,450,150,40);
+ctx.fillStyle=difficulty==="easy"?"#000":"#fff";
+ctx.fillText("EASY",427,475);
+
+ctx.fillStyle=difficulty==="normal"?"#00ff99":"#fff";
+ctx.fillRect(525,450,150,40);
+ctx.fillStyle=difficulty==="normal"?"#000":"#fff";
+ctx.fillText("NORMAL",602,475);
+
+ctx.fillStyle=difficulty==="hard"?"#00ff99":"#fff";
+ctx.fillRect(700,450,150,40);
+ctx.fillStyle=difficulty==="hard"?"#000":"#fff";
+ctx.fillText("HARD",777,475);
+
+ctx.fillStyle="#fff";
+ctx.font="16px Quicksand";
+ctx.fillText("Press ENTER to start",600,580);
+}
+
+/* ================= DIFFICULTY SELECT ================= */
+function handleDifficultySelect(e){
+const rect=canvas.getBoundingClientRect();
+const x=e.clientX-rect.left;
+const y=e.clientY-rect.top;
+
+if(y>=450 && y<=490){
+if(x>=350 && x<=500) difficulty="easy";
+else if(x>=525 && x<=675) difficulty="normal";
+else if(x>=700 && x<=850) difficulty="hard";
+}
+}
+
+canvas.addEventListener("click",handleDifficultySelect);
+
+/* ================= DRAW ================= */
+function draw(){
+
+ctx.clearRect(0,0,1200,650);
+
+/* oxygen pain overlay */
+ctx.fillStyle=`rgba(0,0,0,${1-oxygen/100})`;
+ctx.fillRect(0,0,1200,650);
+
+/* platforms */
+platforms.forEach(p=>{
+ctx.fillStyle="#b22222";
+ctx.fillRect(p.x-cameraX,p.y,p.w,p.h);
+});
+
+/* oxygen coins */
+oxygenCoins.forEach(c=>{
+if(!c.taken){
+ctx.fillStyle="#7fffd4";
+ctx.beginPath();
+ctx.arc(c.x-cameraX,c.y,8,0,Math.PI*2);
+ctx.fill();
+}
+});
+
+/* plaques */
+plaques.forEach(p=>{
+ctx.fillStyle="#ffd700";
+ctx.beginPath();
+ctx.ellipse(p.x-cameraX,p.y,p.w/2,p.h/2,0,0,Math.PI*2);
+ctx.fill();
+});
+
+/* final wave */
+finalWave.forEach(p=>{
+if(p.type==="fast") ctx.fillStyle="#ff6600";
+else if(p.type==="tank") ctx.fillStyle="#880000";
+else ctx.fillStyle="#ff0000";
+
+ctx.fillRect(p.x-cameraX,p.y,p.w,p.h);
+
+if(p.type==="tank"){
+ctx.strokeStyle="#fff";
+ctx.lineWidth=2;
+ctx.strokeRect(p.x-cameraX,p.y,p.w,p.h);
+}
+});
+
+/* bullets */
+ctx.fillStyle="cyan";
+bullets.forEach(b=>{
+ctx.fillRect(b.x-cameraX,b.y,b.w,b.h);
+});
+
+/* player */
+drawCell(player.x-cameraX+20,player.y+20);
+
+/* heart */
+drawHeart(heart.x-cameraX,heart.y,80);
+
+/* UI */
+ctx.fillStyle="#fff";
+ctx.font="18px Quicksand";
+ctx.textAlign="left";
+ctx.fillText("Lives: "+lives,20,30);
+ctx.fillText("Oxygen: "+Math.floor(oxygen),20,60);
+ctx.fillText("Score: "+score,20,90);
+ctx.fillText("Time: "+elapsedTime+"s",20,120);
+ctx.fillText("Difficulty: "+difficulty.toUpperCase(),20,150);
+
+/* pause overlay */
+if(isPaused){
+ctx.fillStyle="rgba(0,0,0,0.7)";
+ctx.fillRect(0,0,1200,650);
+ctx.fillStyle="#fff";
+ctx.font="60px Quicksand";
+ctx.textAlign="center";
+ctx.fillText("PAUSED",600,300);
+ctx.font="20px Quicksand";
+ctx.fillText("Press P to resume",600,380);
+}
+
+/* win/lose */
+if(state==="lose"){
+ctx.fillStyle="rgba(0,0,0,0.8)";
+ctx.fillRect(0,0,1200,650);
+ctx.fillStyle="#fff";
+ctx.font="60px Quicksand";
+ctx.textAlign="center";
+ctx.fillText("ANGINA ATTACK",600,250);
+ctx.font="24px Quicksand";
+ctx.fillText("Final Score: "+score,600,330);
+ctx.fillText("Time: "+elapsedTime+"s",600,370);
+ctx.font="18px Quicksand";
+ctx.fillText("Press R to restart or ENTER for menu",600,450);
+}
+
+if(state==="win"){
+ctx.fillStyle="rgba(0,0,0,0.8)";
+ctx.fillRect(0,0,1200,650);
+ctx.fillStyle="#fff";
+ctx.font="60px Quicksand";
+ctx.textAlign="center";
+ctx.fillText("HEART REACHED!",600,250);
+ctx.font="24px Quicksand";
+ctx.fillText("Final Score: "+score,600,330);
+ctx.fillText("Time: "+elapsedTime+"s",600,370);
+ctx.font="18px Quicksand";
+ctx.fillText("Press R to restart or ENTER for menu",600,450);
+}
+}
+
+/* ================= LOOP ================= */
+function loop(){
+
+if(state==="menu"){
+if(keys["Enter"]) reset();
+handleDifficultySelect({clientX:0,clientY:0});
+}
+
+if((state==="lose" || state==="win") && keys["r"]) {
+state="menu";
+}
+
+if(state==="menu" && keys["Enter"]){
+keys["Enter"]=false;
+reset();
+}
+
+update();
+
+if(state==="menu") drawMenu();
+else draw();
+
+requestAnimationFrame(loop);
+}
+
+loop();
+
+</script>
+
+</body>
+</html>
